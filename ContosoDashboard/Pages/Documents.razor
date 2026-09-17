@@ -1,0 +1,78 @@
+@page "/documents"
+@attribute [Authorize]
+@inject IDocumentService DocumentService
+@inject AuthenticationStateProvider AuthenticationStateProvider
+@using System.Security.Claims
+
+<PageTitle>Documents - ContosoDashboard</PageTitle>
+
+<div class="container-fluid">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1>Documents</h1>
+        <span class="text-muted">Protected local storage</span>
+    </div>
+
+    <EditForm Model="metadata" OnValidSubmit="UploadAsync" class="card mb-4">
+        <DataAnnotationsValidator />
+        <div class="card-body">
+            <h2 class="h5">Upload documents</h2>
+            <div class="row g-3">
+                <div class="col-md-6"><label class="form-label" for="document-title">Title</label><InputText id="document-title" class="form-control" @bind-Value="metadata.Title" /></div>
+                <div class="col-md-6"><label class="form-label" for="document-category">Category</label><InputSelect id="document-category" class="form-select" @bind-Value="metadata.Category"><option value="">Select a category</option>@foreach (var category in Document.AllowedCategories) { <option value="@category">@category</option> }</InputSelect></div>
+                <div class="col-md-6"><label class="form-label" for="document-description">Description</label><InputTextArea id="document-description" class="form-control" @bind-Value="metadata.Description" /></div>
+                <div class="col-md-6"><label class="form-label" for="document-tags">Tags</label><InputText id="document-tags" class="form-control" @bind-Value="metadata.Tags" /></div>
+                <div class="col-md-6"><label class="form-label" for="document-project">Project ID (optional)</label><InputNumber id="document-project" class="form-control" @bind-Value="metadata.ProjectId" /></div>
+                <div class="col-12"><label class="form-label" for="document-files">Files</label><InputFile id="document-files" OnChange="FilesSelected" multiple /></div>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(error)) { <div class="alert alert-danger mt-3">@error</div> }
+            @if (uploading) { <div class="progress mt-3"><div class="progress-bar" style="width:@progressPercent%">@progressPercent%</div></div> }
+            @if (results.Count > 0) { <ul class="list-group mt-3">@foreach (var result in results) { <li class="list-group-item @(result.Succeeded ? "list-group-item-success" : "list-group-item-danger")"><strong>@result.FileName</strong>: @result.Message</li> }</ul> }
+            <button class="btn btn-primary mt-3" type="submit" disabled="@(uploading || selectedFiles.Count == 0)">Upload selected files</button>
+        </div>
+    </EditForm>
+
+    <h2 class="h4">My accessible documents</h2>
+    @if (documents is null) { <p><em>Loading...</em></p> }
+    else if (documents.Count == 0) { <div class="alert alert-info">No documents are available yet.</div> }
+    else { <div class="table-responsive"><table class="table table-striped align-middle"><thead><tr><th>Title</th><th>Category</th><th>Uploaded</th><th>Uploader</th><th>Size</th><th>Type</th><th>Project</th><th>Tags</th></tr></thead><tbody>@foreach (var document in documents) { <tr><td>@document.Title</td><td>@document.Category</td><td>@document.UploadedDate.ToLocalTime().ToString("MMM d, yyyy")</td><td>@document.UploaderName</td><td>@FormatSize(document.FileSize)</td><td>@document.FileType</td><td>@(document.ProjectName ?? "-")</td><td>@(document.Tags ?? "-")</td></tr> }</tbody></table></div> }
+</div>
+
+@code {
+    private DocumentMetadata metadata = new(string.Empty, string.Empty);
+    private readonly List<UploadFileInput> selectedFiles = [];
+    private List<UploadResult> results = [];
+    private List<DocumentSummary>? documents;
+    private string? error;
+    private bool uploading;
+    private int progressPercent;
+    private int currentUserId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        int.TryParse(state.User.FindFirst(ClaimTypes.NameIdentifier)?.Value, out currentUserId);
+        await LoadDocumentsAsync();
+    }
+
+    private void FilesSelected(InputFileChangeEventArgs args)
+    {
+        selectedFiles.Clear();
+        foreach (var file in args.GetMultipleFiles(20))
+            selectedFiles.Add(new UploadFileInput(file.Name, file.ContentType, file.Size, cancellationToken => Task.FromResult<Stream>(file.OpenReadStream(Document.MaxFileSize, cancellationToken))));
+        error = null;
+    }
+
+    private async Task UploadAsync()
+    {
+        if (currentUserId <= 0) { error = "You must be signed in to upload documents."; return; }
+        uploading = true; progressPercent = 0; results = [];
+        var progress = new Progress<UploadProgress>(value => progressPercent = value.TotalBytes == 0 ? 0 : (int)Math.Min(100, value.BytesProcessed * 100 / value.TotalBytes));
+        results = (await DocumentService.UploadAsync(currentUserId, metadata, selectedFiles, progress)).ToList();
+        uploading = false;
+        selectedFiles.Clear();
+        await LoadDocumentsAsync();
+    }
+
+    private async Task LoadDocumentsAsync() => documents = (await DocumentService.SearchAsync(currentUserId)).ToList();
+    private static string FormatSize(long bytes) => bytes < 1024 ? $"{bytes} B" : bytes < 1024 * 1024 ? $"{bytes / 1024d:0.0} KB" : $"{bytes / (1024d * 1024):0.0} MB";
+}

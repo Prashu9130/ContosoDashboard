@@ -15,7 +15,7 @@ builder.Services.AddScoped<AuthenticationStateProvider, CustomAuthenticationStat
 
 // Configure Database
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
-    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+    options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection")));
 
 // Configure Mock Authentication (Cookie-based for training purposes)
 builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
@@ -43,6 +43,9 @@ builder.Services.AddScoped<ITaskService, TaskService>();
 builder.Services.AddScoped<IProjectService, ProjectService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
 builder.Services.AddScoped<IDashboardService, DashboardService>();
+builder.Services.AddScoped<IDocumentService, DocumentService>();
+builder.Services.AddSingleton<IFileStorageService, FileStorageService>();
+builder.Services.AddSingleton<IMalwareScanner, MalwareScanner>();
 
 // Add HttpContextAccessor for accessing user claims
 builder.Services.AddHttpContextAccessor();
@@ -56,7 +59,8 @@ using (var scope = app.Services.CreateScope())
     try
     {
         var context = services.GetRequiredService<ApplicationDbContext>();
-        context.Database.EnsureCreated(); // For development - use migrations in production
+        context.Database.EnsureCreated();
+        EnsureDocumentSchema(context);
     }
     catch (Exception ex)
     {
@@ -109,3 +113,68 @@ app.MapBlazorHub();
 app.MapFallbackToPage("/_Host");
 
 app.Run();
+
+static void EnsureDocumentSchema(ApplicationDbContext context)
+{
+    context.Database.ExecuteSqlRaw("""
+        CREATE TABLE IF NOT EXISTS Documents (
+            DocumentId INTEGER NOT NULL CONSTRAINT PK_Documents PRIMARY KEY AUTOINCREMENT,
+            Title TEXT NOT NULL,
+            Description TEXT NULL,
+            Category TEXT NOT NULL,
+            Tags TEXT NULL,
+            OriginalFileName TEXT NOT NULL,
+            StorageKey TEXT NOT NULL,
+            FileType TEXT NOT NULL,
+            FileExtension TEXT NOT NULL,
+            FileSize INTEGER NOT NULL,
+            UploaderId INTEGER NOT NULL,
+            ProjectId INTEGER NULL,
+            TaskId INTEGER NULL,
+            UploadedDate TEXT NOT NULL,
+            UpdatedDate TEXT NOT NULL,
+            CONSTRAINT AK_Documents_StorageKey UNIQUE (StorageKey),
+            CONSTRAINT FK_Documents_Users_UploaderId FOREIGN KEY (UploaderId) REFERENCES Users (UserId) ON DELETE RESTRICT,
+            CONSTRAINT FK_Documents_Projects_ProjectId FOREIGN KEY (ProjectId) REFERENCES Projects (ProjectId) ON DELETE SET NULL,
+            CONSTRAINT FK_Documents_Tasks_TaskId FOREIGN KEY (TaskId) REFERENCES Tasks (TaskId) ON DELETE SET NULL
+        );
+        """);
+    context.Database.ExecuteSqlRaw("""
+        CREATE TABLE IF NOT EXISTS DocumentShares (
+            DocumentShareId INTEGER NOT NULL CONSTRAINT PK_DocumentShares PRIMARY KEY AUTOINCREMENT,
+            DocumentId INTEGER NOT NULL,
+            UserId INTEGER NULL,
+            TeamName TEXT NULL,
+            SharedByUserId INTEGER NOT NULL,
+            SharedDate TEXT NOT NULL,
+            CONSTRAINT FK_DocumentShares_Documents_DocumentId FOREIGN KEY (DocumentId) REFERENCES Documents (DocumentId) ON DELETE CASCADE,
+            CONSTRAINT FK_DocumentShares_Users_UserId FOREIGN KEY (UserId) REFERENCES Users (UserId) ON DELETE RESTRICT,
+            CONSTRAINT FK_DocumentShares_Users_SharedByUserId FOREIGN KEY (SharedByUserId) REFERENCES Users (UserId) ON DELETE RESTRICT
+        );
+        """);
+    context.Database.ExecuteSqlRaw("""
+        CREATE TABLE IF NOT EXISTS DocumentActivities (
+            DocumentActivityId INTEGER NOT NULL CONSTRAINT PK_DocumentActivities PRIMARY KEY AUTOINCREMENT,
+            DocumentId INTEGER NULL,
+            ActorUserId INTEGER NOT NULL,
+            ActivityType TEXT NOT NULL,
+            OccurredDate TEXT NOT NULL,
+            FileType TEXT NULL,
+            FileSize INTEGER NULL,
+            TargetUserId INTEGER NULL,
+            TargetTeamName TEXT NULL,
+            Details TEXT NULL,
+            CONSTRAINT FK_DocumentActivities_Documents_DocumentId FOREIGN KEY (DocumentId) REFERENCES Documents (DocumentId) ON DELETE SET NULL,
+            CONSTRAINT FK_DocumentActivities_Users_ActorUserId FOREIGN KEY (ActorUserId) REFERENCES Users (UserId) ON DELETE RESTRICT
+        );
+        """);
+    context.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS IX_Documents_UploaderId_UploadedDate ON Documents (UploaderId, UploadedDate);");
+    context.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS IX_Documents_ProjectId_UploadedDate ON Documents (ProjectId, UploadedDate);");
+    context.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS IX_Documents_Category_UploadedDate ON Documents (Category, UploadedDate);");
+    context.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS IX_Documents_FileType ON Documents (FileType);");
+    context.Database.ExecuteSqlRaw("CREATE UNIQUE INDEX IF NOT EXISTS IX_DocumentShares_DocumentId_UserId_TeamName ON DocumentShares (DocumentId, UserId, TeamName);");
+    context.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS IX_DocumentShares_UserId ON DocumentShares (UserId);");
+    context.Database.ExecuteSqlRaw("CREATE INDEX IF NOT EXISTS IX_DocumentShares_TeamName ON DocumentShares (TeamName);");
+}
+
+public partial class Program { }
